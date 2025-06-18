@@ -1,0 +1,665 @@
+<?php
+session_start();
+
+if (!isset($_SESSION['email'])) {
+    header("Location: authentication/web/api/login.php");
+    exit();
+}
+
+$email = $_SESSION['email'];
+$role = $_SESSION['role'];
+
+// Retrieve `uploader_email` from GET or POST
+$uploader_email = '';
+if (isset($_GET['uploader_email'])) {
+    $uploader_email = urldecode($_GET['uploader_email']);
+} elseif (isset($_POST['uploader_email'])) {
+    $uploader_email = htmlspecialchars($_POST['uploader_email']);
+}
+
+
+
+require '../../../../db/db.php';
+
+// Fetch logged-in user's name
+$sqlClient = "SELECT name FROM users WHERE email = ?";
+$stmtClient = $conn->prepare($sqlClient);
+$stmtClient->bind_param("s", $email);
+$stmtClient->execute();
+$resultClient = $stmtClient->get_result();
+
+$clientName = "Unknown"; // Default value
+if ($resultClient->num_rows > 0) {
+    $rowClient = $resultClient->fetch_assoc();
+    $clientName = $rowClient['name'];
+}
+$stmtClient->close();
+
+// Fetch profile image: First check session, if not set, get from DB
+$profileImg = $_SESSION['profile_img'] ?? '';
+
+if (empty($profileImg) && $role != 'guest' && !empty($email)) {
+    $stmt = $conn->prepare("SELECT profile_img FROM users WHERE email = ?");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $stmt->bind_result($profileImg);
+    if ($stmt->fetch() && !empty($profileImg)) {
+        $_SESSION['profile_img'] = $profileImg; // Store in session
+    } else {
+        $profileImg = 'default.jpg'; // Set a default image if none found
+    }
+    $stmt->close();
+}
+
+// Fetch supplier name from `about_me`
+$sql = "SELECT name FROM about_me WHERE email = ?";
+$stmt = $conn->prepare($sql);
+$stmt->bind_param("s", $uploader_email);
+$stmt->execute();
+$result = $stmt->get_result();
+
+$supplierName = "Unknown"; // Default value
+if ($result->num_rows > 0) {
+    $row = $result->fetch_assoc();
+    $supplierName = $row['name'];
+}
+$stmt->close();
+
+// Fetch available hours
+$timeOptions = [];
+$stmt = $conn->prepare("SELECT avail_hrs FROM about_me WHERE email = ?");
+$stmt->bind_param("s", $uploader_email);
+$stmt->execute();
+$result = $stmt->get_result();
+
+$availHrsArray = [];
+if ($row = $result->fetch_assoc()) {
+    $availHrs = $row['avail_hrs'];
+    $availHrsArray = array_filter(explode(',', $availHrs));
+    sort($availHrsArray);
+}
+
+// Generate time options with ":00"
+foreach ($availHrsArray as $hour) {
+    $hour = (int)$hour;
+    $formattedTime = date("g:00 a", strtotime("$hour:00"));
+    $timeOptions[] = "<option value='$hour'>$formattedTime</option>";
+}
+$stmt->close();
+
+// Fetch appointment time
+$appointmentStmt = $conn->prepare("SELECT time FROM appointment WHERE email_uploader = ?");
+$appointmentStmt->bind_param("s", $uploader_email);
+$appointmentStmt->execute();
+$appointmentResult = $appointmentStmt->get_result();
+
+if ($appointmentRow = $appointmentResult->fetch_assoc()) {
+    $time = (int)$appointmentRow['time'];
+
+    if (($key = array_search($time, $availHrsArray)) !== false) {
+        unset($availHrsArray[$key]);
+    } else {
+        $availHrsArray[] = $time;
+    }
+
+    sort($availHrsArray);
+    $updatedAvailHrs = implode(',', $availHrsArray);
+
+    $updateStmt = $conn->prepare("UPDATE about_me SET avail_hrs = ? WHERE email = ?");
+    $updateStmt->bind_param("ss", $updatedAvailHrs, $uploader_email);
+    $updateStmt->execute();
+    $updateStmt->close();
+}
+
+
+
+$appointmentStmt->close();
+$conn->close();
+?>
+
+<?php 
+$profileImg = ''; 
+$about_me = '';
+$profession = '';
+$latitude = '';
+$longitude = '';
+$age = '';
+$name = 'Unknown User';
+$uploaderEmail = '';
+$location_text = ''; 
+$worksCount = 0; 
+if (isset($_POST['uploader_email']) && !empty($_POST['uploader_email'])) {
+    $uploaderEmail = htmlspecialchars($_POST['uploader_email']);
+    
+    echo '<script>
+        // Store the uploaderEmail in localStorage so it persists across pages
+        localStorage.setItem("uploader_email", "' . $uploaderEmail . '");
+    </script>';
+} else {
+  
+    echo '<script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var storedEmail = localStorage.getItem("uploader_email");
+            if (storedEmail) {
+                // Resubmit the form with the email from localStorage
+                var form = document.createElement("form");
+                form.method = "POST";
+                form.action = window.location.href;
+
+                var input = document.createElement("input");
+                input.type = "hidden";
+                input.name = "uploader_email";
+                input.value = storedEmail;
+
+                form.appendChild(input);
+                document.body.appendChild(form);
+
+                form.submit();
+            } else {
+                alert("No uploader email found.");
+            }
+        });
+    </script>';
+    exit; 
+}
+?>
+
+
+
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <link rel="icon" href="../../../../assets/logo.jpg" type="image/png">
+    <title>LENSFOLIOHUB</title>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="../../css/supplier-profile.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    
+    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css" rel="stylesheet">
+
+</head>
+
+<body>
+    <div id="preloader">
+        <div class="line"></div>
+        <div class="left"></div>
+        <div class="right"></div>
+    </div>
+
+    <nav class="navbar navbar-expand-lg">
+    <div class="container">
+        <a class="navbar-brand d-none d-md-block logo" href="../../../../index.php">
+            LENSFOLIOHUB
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+            aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
+                style="stroke: black; fill: none;">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path>
+            </svg>
+        </button>
+
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <!-- Links (left) -->
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item">
+                    <a class="nav-link" href="../../../../index.php">Home</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="../../../index/web/api/about-us.php">About</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="snapfeed.php">Snapfeed</a>
+                </li>
+                <li class="nav-item">
+                        <a class="nav-link" href="supplier.php">Supplier</a>
+                </li>
+            </ul>
+
+            <!-- Profile dropdown (right) -->
+            <div class="d-flex ms-auto">
+                <?php if ($role != 'guest') { ?>
+                    <div class="dropdown">
+                        <button class="btn btn-theme dropdown-toggle" type="button" id="dropdownMenuButton" data-bs-toggle="dropdown" aria-expanded="false">
+                           <img src="../../../../assets/img/profile/<?php echo htmlspecialchars($profileImg); ?>" alt="Profile" class="profile-img">
+                        </button>
+                        <ul class="dropdown-menu" aria-labelledby="dropdownMenuButton">
+                        <li><a class="dropdown-item" href="profile.php">Main Profile</a></li>
+                                    <li><a class="dropdown-item" href="status.php">Booking Status</a></li>
+                                    <li><a class="dropdown-item" href="history.php">History</a></li>
+                                    <li><a class="dropdown-item" href="notifications.php">Notifications</a></li>
+                            <li><a class="dropdown-item" href="../../../index/function/php/logout.php">Logout</a></li>
+                        </ul>
+                    </div>
+                <?php } else { ?>
+                    <!-- User is not logged in, display a login link -->
+                    <a href="authentication/web/api/login.php" class="btn btn-theme" type="button">Login</a>
+                <?php } ?>
+            </div>
+        </div>
+    </div>
+</nav>
+
+    <section class="supplier-profile">
+        <div class="container mt-5">
+        <ul class="nav justify-content-center">
+                <li class="nav-item">
+                    <a href="about-me.php"><button class="nav-link about-me">About Me</button></a>
+                </li>
+                <li class="nav-item">
+                    <a href="projects.php"><button class="nav-link ">Projects</button></a>
+                </li>
+                <li class="nav-item">
+                    <a href="calendar.php"><button class="nav-link calendar highlight">Calendar</button></a>
+                </li>
+                <li class="nav-item">
+                    <a href="contacts.php"><button class="nav-link contacts">Contacts</button></a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="container">
+  <div class="row mt-5">
+    <!-- Calendar Section -->
+    <div class="col-md-6">
+      <div id="calendar"></div>
+    </div>
+
+    <!-- Booking Form and Map Section -->
+    <div class="col-md-6 ">
+    <div class="container booking-container">
+
+    <form action="../../function/php/save_appointment.php" method="POST">
+        <div class="card">
+        <div class="card-body">
+            
+        <h2 class="text-center mb-4">BOOK A SESSION</h2>
+            <div class="row mb-3 justify-content-center">
+    
+        <div class="col-10 d-flex gap-1 mt-2">
+            <label for="fullname" class="form-label">Full Name:</label>
+            <input type="text" class="form-control" name="fullname" id="fullname" placeholder="Enter your full name" required>
+        </div>
+        <div class="col-10 d-flex flex-column gap-3">
+            <div class="d-flex gap-1 mt-2">
+                <label for="location" class="form-label">Location:</label>
+                <input type="text" class="form-control" id="search-location" placeholder="Search for a location in Cavite" required>
+                <input type="hidden" name="latitude" id="latitude">
+                <input type="hidden" name="longitude" id="longitude">
+            </div>
+            <div id="map" style="height: 300px; width: 100%; border: 1px solid #dddada; border-radius: 10px;"></div>
+        </div>
+        <div class="col-10 d-flex gap-1 mt-3">
+            <label for="event" class="form-label">Event:</label>
+            <select class="form-select" name="event" id="event" required>
+                <option value="" disabled selected>Select an option</option>
+                <option value="photography">Photography</option>
+                <option value="videography">Videography</option>
+            </select>
+        </div>
+        <script>
+        // Pass the avail_hrs PHP value to JavaScript
+        const availHrs = "<?php echo $availHrs; ?>";
+        console.log("Available Hours: ", availHrs);
+    </script>
+        <div class="col-10 d-flex gap-1 mt-2">
+            <label for="time" class="form-label">Time:</label>
+            <select class="form-control" name="time" id="time" required>
+                <option value="" disabled selected>Select Time</option>
+                <?= implode("\n", $timeOptions); // Dynamically insert options ?>
+            </select>
+        </div>
+        <input type="hidden" id="selected_date" name="selected_date">
+        <input type="hidden" name="email_uploader" id="email_uploader">
+        <input type="hidden" name="email" id="email" value="<?php echo isset($_SESSION['email']) ? $_SESSION['email'] : ''; ?>">
+        
+        <div class="col-10 d-flex gap-1 mt-2 book">
+            <div class="form-check">
+            <input type="checkbox" class="form-check-input" id="agreementCheckbox" required>
+            <label class="form-check-label" for="agreementCheckbox">By checking this box, you agree to the terms and conditions.</label>
+        </div>
+        </div>
+        <div class="col-10 d-flex gap-1 mt-2 book">
+            <button type="submit" class="btn mt-2">Book</button>
+        </div>
+    </form>
+
+    <div class="modal fade" id="agreementModal" tabindex="-1" aria-labelledby="agreementModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="agreementModalLabel">Agreement</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p><strong>1. PARTIES</strong><br>
+        - SUPPLIER: <?php echo $supplierName; ?><br>
+        - CLIENT:  <?php echo $clientName; ?><br>
+        - EFFECTIVE DATE: <?php $currentDate = date("F j, Y"); ?><?php echo  $currentDate; ?></p>
+        <p><strong>2. TERM</strong><br>
+        [Length of agreement, e.g., project-based, ongoing]</p>
+        <p><strong>3. DIGITAL PLATFORM</strong><br>
+        Lensfoliohub</p>
+        <p><strong>SCOPE OF WORK</strong><br>
+        1. The Supplier agrees to provide high-quality photography services to the Client for the digital platform.<br>
+        2. Services include: [list specific services, e.g., event coverage, product photography, editing]</p>
+        <p><strong>INTELLECTUAL PROPERTY RIGHTS</strong><br>
+        - The Supplier retains copyright to all images.<br>
+        - The Client receives a non-exclusive license to use images for [specific purposes].<br>
+        - The Client agrees to provide credit to the Supplier whenever the images are used or shared.<br>
+        - The Client agrees not to bypass or disable any technological measures implemented to prevent screenshotting or capturing of the content.</p>
+        <p><strong>CONFIDENTIALITY</strong><br>
+        - Each party agrees to keep the other party's confidential information and to use it strictly for the performance of this agreement.</p>
+        <p><strong>LIABILITY AND DAMAGES</strong><br>
+        - The Client shall be liable for any damages or losses incurred due to unauthorized use or screenshotting of the content.<br>
+        - The Client shall immediately cease and desist from using the copyrighted material.</p>
+        <p><strong>WARRANTY</strong><br>
+        - The Supplier warrants that the images are original and free from infringement.</p>
+        <p><strong>By signing below, both parties acknowledge reading, understanding, and agreeing to the terms.</strong></p>
+        <input type="checkbox" name="" id="" required>I read and understand all.
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-success" data-bs-dismiss="modal">Agree</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+     document.getElementById('agreementCheckbox').addEventListener('change', function() {
+        if (this.checked) {
+            var myModal = new bootstrap.Modal(document.getElementById('agreementModal'));
+            myModal.show();
+        }
+    });
+</script>
+
+
+
+      
+    </div>
+  </div>
+</div>
+
+
+ 
+
+</div>
+
+        <!-- Google Maps API Script -->
+        <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDmgygVeipMUsrtGeZPZ9UzXRmcVdheIqw&libraries=places"></script>
+<script>
+ let map, marker, geocoder;
+
+function initMap() {
+  const caviteBounds = {
+    north: 14.5063, 
+    south: 14.0800, 
+    east: 120.9826, 
+    west: 120.6706
+  };
+
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 14.2849, lng: 120.8784 }, 
+    zoom: 12,
+    restriction: {
+      latLngBounds: caviteBounds, 
+      strictBounds: true
+    }
+  });
+
+  geocoder = new google.maps.Geocoder();
+  const autocomplete = new google.maps.places.Autocomplete(document.getElementById('search-location'), {
+    componentRestrictions: { country: 'ph' },
+    bounds: caviteBounds, 
+    strictBounds: true
+  });
+
+  autocomplete.addListener('place_changed', function () {
+    const place = autocomplete.getPlace();
+    if (!place.geometry) return;
+
+    document.getElementById('latitude').value = place.geometry.location.lat();
+    document.getElementById('longitude').value = place.geometry.location.lng();
+
+    map.setCenter(place.geometry.location);
+    map.setZoom(15);
+
+    // Initialize or update the marker position
+    if (marker) {
+      marker.setPosition(place.geometry.location);
+    } else {
+      marker = new google.maps.Marker({
+        map: map,
+        position: place.geometry.location,
+        draggable: true,
+        icon: {
+          url: "../../../../assets/img/camera.png",
+          scaledSize: new google.maps.Size(60, 60)
+        }
+      });
+    }
+
+    document.getElementById('location').value = place.formatted_address;
+
+    google.maps.event.addListener(marker, 'dragend', function () {
+      geocodePosition(marker.getPosition());
+    });
+  });
+
+  function geocodePosition(position) {
+    geocoder.geocode({ latLng: position }, function (responses) {
+      if (responses && responses.length > 0) {
+        document.getElementById('location').value = responses[0].formatted_address;
+      } else {
+        document.getElementById('location').value = 'Cannot determine address at this location.';
+      }
+    });
+  }
+}
+
+window.onload = initMap;
+
+</script>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+      
+     
+    <div class="wave">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 250" style="margin-bottom: -5px;">
+          <path fill="#FAF7F2" fill-opacity="1"
+            d="M0,128L60,138.7C120,149,240,171,360,170.7C480,171,600,149,720,133.3C840,117,960,107,1080,112C1200,117,1320,139,1380,149.3L1440,160L1440,320L1380,320C1320,320,1200,320,1080,320C960,320,840,320,720,320C600,320,480,320,360,320C240,320,120,320,60,320L0,320Z">
+          </path>
+        </svg>
+      </div>
+
+
+    <footer class="footer">
+        <div class="container">
+            <div class="row">
+                <!-- About Section -->
+                <div class="col-md-4">
+                    <h5>About Photography News</h5>
+                    <p>Stay updated with the latest news, trends, and innovations in the world of photography. Whether you're a professional or an enthusiast, our articles are designed to inspire and inform.</p>
+                </div>
+    
+                <!-- Quick Links -->
+                <div class="col-md-4">
+                    <h5>Quick Links</h5>
+                    <ul class="list-unstyled">
+                        <li><a href="#">Home</a></li>
+                        <li><a href="#">Latest News</a></li>
+                        <li><a href="#">Photography Tips</a></li>
+                        <li><a href="#">Camera Reviews</a></li>
+                    </ul>
+                </div>
+    
+                <!-- Contact Section -->
+                <div class="col-md-4">
+                    <h5>Contact Us</h5>
+                    <p>Email: info@photographynews.com</p>
+                    <p>Phone: +123 456 7890</p>
+                    <div class="social-icons">
+                        <a href="#"><i class="fab fa-facebook"></i></a>
+                        <a href="#"><i class="fab fa-twitter"></i></a>
+                        <a href="#"><i class="fab fa-instagram"></i></a>
+                        <a href="#"><i class="fab fa-linkedin"></i></a>
+                    </div>
+                </div>
+            </div>
+            <div class="text-center mt-4">
+                <p class="mb-0">&copy; 2024 Photography News. All Rights Reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../function/script/slider-img.js"></script>
+    <script src="../../function/script/pre-loadall.js"></script>
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.min.js"></script>
+
+<!-- FullCalendar JS -->
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var calendarEl = document.getElementById('calendar');
+    var uploaderEmail = localStorage.getItem("uploader_email"); 
+
+    console.log('Uploader Email:', uploaderEmail);
+
+    if (uploaderEmail) {
+        document.getElementById('email_uploader').value = uploaderEmail;
+        console.log('Hidden Input Value:', document.getElementById('email_uploader').value); // Debug line
+    } else {
+        console.error("Uploader email not found in localStorage");
+    }
+
+    
+
+    // Fetch the available dates for the uploader
+    fetch('../../function/php/get_user_dates.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'uploader_email=' + encodeURIComponent(uploaderEmail)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            const availableDates = data.dates; // Get available dates from the response
+            initializeCalendar(availableDates);
+        } else {
+            console.error('Error fetching dates:', data.message);
+        }
+    })
+    .catch(error => console.error('Fetch error:', error));
+
+    function initializeCalendar(availableDates) {
+        var calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: 'dayGridMonth',
+            selectable: true,
+            dateClick: function(info) {
+                var dateStr = info.dateStr;
+
+                // Only allow selection for available dates
+                if (availableDates.includes(dateStr)) {
+                    // Set the selected date in the hidden input
+                    document.getElementById('selected_date').value = dateStr;
+
+                    // Remove active class from all days
+                    const previouslySelected = document.querySelector('.fc-daygrid-day.active-date');
+                    if (previouslySelected) {
+                        previouslySelected.classList.remove('active-date');
+                        previouslySelected.style.backgroundColor = ''; // Reset background color
+
+                        // Reset the day number color for previously selected date
+                        const prevDayNumber = previouslySelected.querySelector('.fc-daygrid-day-number');
+                        if (prevDayNumber) {
+                            prevDayNumber.style.color = ''; // Reset color to default
+                        }
+                    }
+
+                    // Add active class to the clicked date
+                    info.dayEl.classList.add('active-date');
+                    info.dayEl.style.backgroundColor = '#7A3015'; // Change background color
+
+                    // Set the text color for the day number to white
+                    const dayNumber = info.dayEl.querySelector('.fc-daygrid-day-number');
+                    if (dayNumber) {
+                        dayNumber.style.color = '#fff'; // Set the day number color to white
+                    }
+                }
+            },
+            eventDidMount: function(info) {
+                const dateStr = info.event.startStr;
+
+                // Add the active class to available dates
+                if (availableDates.includes(dateStr)) {
+                    info.el.classList.add('available-date'); // Add available class
+                } else {
+                    info.el.classList.add('inactive-date'); // Add inactive class
+                    info.el.style.opacity = '0.3'; // Set opacity for inactive dates
+                }
+            },
+            datesSet: function(dateInfo) {
+                const start = dateInfo.start; // Start of the current view
+                const end = dateInfo.end; // End of the current view
+
+                // Wait until the calendar has rendered
+                setTimeout(() => {
+                    // Get all day cells in the current view
+                    const dayEls = document.querySelectorAll('.fc-daygrid-day');
+
+                    // Iterate through the day elements
+                    dayEls.forEach(dayEl => {
+                        const dateStr = dayEl.dataset.date; // Get the data-date attribute
+
+                        if (!availableDates.includes(dateStr)) {
+                            dayEl.classList.add('inactive-date'); // Ensure inactive dates are set
+                            dayEl.style.opacity = '0.3'; // Set opacity for inactive dates
+                            dayEl.style.pointerEvents = 'none'; // Make them unclickable
+                        }
+                    });
+                }, 0);
+            }
+        });
+
+        // Add existing available dates as events for highlighting
+        availableDates.forEach(date => {
+            calendar.addEvent({
+                title: 'Available',
+                start: date,
+                allDay: true,
+                classNames: ['available-date'] // Ensure the class is used for styling
+            });
+        });
+
+        calendar.render();
+
+        // Store the calendar instance for later use
+        window.calendarInstance = calendar; // Save reference to the calendar instance
+    }
+});
+
+
+
+  </script>
+
+</body>
+</html>
